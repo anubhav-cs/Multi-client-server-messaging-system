@@ -1,0 +1,182 @@
+At any time, a server could be in one of three states:
+    Peer
+    SuperPeer
+    MasterSuperPeer (Only special for registration, and possibly load balancing purposes)
+
+At any time, the entire system could be in one of three states:
+    Selecting a new MasterSuperPeer (when the Master goes down)
+    Adding a new SuperPeer (depending on the number of SuperPeers and Peers)
+    Normal
+
+At any time, a Peer is expected to have the following information:
+    -   The clients connected to it.
+    -   Its SuperPeer's hostname/port.
+    -   Possibly one backup SuperPeer's hostname/port.
+
+At any time, a SuperPeer is expected to have the following updated information 
+about the system:
+    -   RegisteredUsers (absolutely consistent)
+    -   LoggedInUsers (in the whole system)
+    -   PendingMessages
+    -   List of Servers in the system (and which SuperPeer they are connected to)
+
+In Normal State:
+    Peer:
+        Connections:
+            -   A Peer is just connected to two SuperPeers, one main, one backup
+            -   When it's started, the peer would've been given a remote hostname and port
+                It tries to connect. Then that Superpeer sends it:
+                    AUTHENTICATION_FAIL (when the secret is wrong)
+                    AUTHENTICATION_REDIRECT (having another SuperPeer's hostname, port)
+                    AUTHENTICATION_SUCCESS (possibly followed up by a BACKUP_SUPERPEER)
+                If that superpeer had sent a redirect, the peer tries to connect to a new superpeer
+                After receiving an AUTHENTICATE_SUCCESS, it becomes a Peer
+            -   Clients can be connected to it. 
+            -   It receives all ACTIVITY_BROADCAST messages from the system
+            -   It sends ACTIVITY_BROADCAST messages to the connected SuperPeer
+            -   If the connected SuperPeer disconnects, it tries to make a connection
+                with the backup SuperPeer
+        Other Server Authenticates:
+            -   It authenticates, then sends back an AUTHENTICATION_REDIRECT 
+                containing its own SuperPeer's information.
+            -   If authentication fails, it sends back an AUTHENTICATION_FAIL
+        Register Request:
+            -   The Peer has its own list of RegisteredUsers, which may or may not 
+                be consistent with the SuperPeers
+            -   If the username in the register request is present in its RegisteredUsers
+                list, it sends back a REGISTER_FAILED.
+            -   Otherwise, it sends a REGISTER to its SuperPeer. The SuperPeer forwards it
+                to the MasterSuperPeer. The MasterSuperPeer either responds with
+                REGISTER_FAILED, or SuperPeerBroadcasts a REGISTER_SUCCESS.
+            -   The SuperPeer then sends the Peer a REGISTER_SUCCESS which is then sent
+                to the user
+        Login Request:
+            -   If the username is in its local RegisteredUsers list, and the secret 
+                does not match, it sends back a LOGIN_FAILED.
+            -   Otherwise, it sends a LOGIN_REQUEST to the SuperPeer.
+            -   The SuperPeer then might respond with a LOGIN_SUCCESS or LOGIN_FAILED.
+        Logout / Client Disconnected
+            -   Sends the SuperPeer CLIENT_DISCONNECTED with their username and
+                their last connected timestamp.
+    
+    SuperPeer:
+        Connections:
+            -   All SuperPeers are connected to each other in a mesh.
+            -   SuperPeers have their own set of Peers.
+            -   SuperPeers can be connected to clients.
+        Register Request:
+            -   Can be received either from NewConns or Peers.
+            -   Checks its own list of registered users, if there, sends back
+                REGISTER_FAILED.
+            -   Otherwise, forwards it to the MasterSuperPeer who might reply 
+                with a REGISTER_SUCCESS or REGISTER_FAILED which would then be
+                sent back.
+        Login Request:
+            -   Can be received either from NewConns or Peers
+            -   Checks its own list of registered users, if mismatch, sends back
+                LOGIN_FAILED.
+            -   Checks its own known maintained list of LoggedInUsers. If known 
+                that the user is logged in somewhere else, sends back a LOGIN_FAILED
+            -   Otherwise, sends out a LOGIN_ATTEMPT to the superpeers.
+            -   If ACKS are received from everywhere, sends back LOGIN_SUCCESS, and 
+                SuperPeerBroadcasts LOGIN_ATTEMPT_SUCCESS, and other servers add it
+                to their LoggedInUsers list.
+            -   Otherwise, if any Server sends back a LOGIN_ATTEMPT_FAILED, it sends
+                back a LOGIN_FAILED.
+            -   This means that if the same user tries to login at two different 
+                servers at the exact same time, both will receive a LOGIN_FAILED.
+            -   Along with LOGIN_SUCCESS, it might also send back redirect info
+        Logout / Client Disconnected
+            -   Broadcasts CLIENT_DISCONNECTED among the SuperPeers with the 
+                timestamp.
+    
+    MasterSuperPeer
+        -   Identical to other SuperPeers except in matters of new user 
+            registration and load balancing decisions.
+        -   So, load balancing and registration were the two scenarios where 
+            we can experience concurrency issues. The same username might be registered
+            at two different servers at the same time. If there are more than one 
+            deciders, then there has to be a case where both users would be denied. 
+        -   If just one system (at a given time) can decide new user registrations,
+            then whichever request reaches this system first will be the one that is 
+            registered.
+            
+When a MasterSuperPeer quits or crashes, the system would go into the 
+    Selecting a new MasterSuperPeer 
+state. What this means is that:
+    -   All new registration requests would be buffered inside the SuperPeer that 
+        receives it until a new MasterSuperPeer is decided.
+    -   The SuperPeers would use their own information for load balancing.
+    -   The system can not create a new SuperPeer in this state.
+    -   There would be an election among the non-master superpeers:
+        https://en.wikipedia.org/wiki/Leader_election (Election in complete networks)
+    -   After the Leader (MasterSuperPeer) is decided, it broadcasts this info.
+
+In the Creating a New SuperPeer state,
+    -   Only one SuperPeer can be added.
+    -   First, this new one creates connections with all superpeers.
+    -   Then, it is treated as a SuperPeer by all other superpeers for information
+        sending purposes, but not for information receiving purposes
+    -   Then, the leader sends this one the SUPERPEER_INFO.
+    -   After the leader receives individual acknowledgements for each piece of 
+        info, it broadcasts that this superpeer has been added.
+    -   Then, the other superpeers add this one as an actual superpeer.
+    -   Then, this server thinks of itself as a superpeer instead of a peer.
+    -   If during this process, the master server fails, then the superpeer 
+        creation fails. It would restart after a new mastersuperpeer has been
+        selected.
+    -   The leader chooses the peer which would be added to the system as a 
+        superpeer. This would be done according to the number of superpeers 
+        and peers in the system:
+        -   When a new Peer connects
+        -   When a SuperPeer disconnects
+        -   When a new MasterSuperPeer has just been selected.
+
+ACTIVITY_MESSAGE:
+
+-   Client sends ACTIVITY_MESSAGE to Peer. (SuperPeer case is explained below.)
+-   Peer creates an ACTIVITY_BROADCAST from the message and sends it to all 
+    its connected clients (including the sender). 
+-   Then it adds a (user, sequence no.) tag and timestamp to the ACTIVITY_BROADCAST 
+    and sends it to its SuperPeer. 
+-   The SuperPeer then SuperPeerBroadcasts the ACTIVITY_BROADCAST.
+-   Each SuperPeer adds the message sequence tag (user, sequence no.) to its
+    trackedMessages list. 
+-   Every Peer or SuperPeer that receives the ACTIVITY_BROADCAST creates an 
+    ACTIVITY_BROADCAST_ACK after sending it to all of its connected clients.
+    This ACTIVITY_BROADCAST_ACK has a timestamp.
+-   The ACTIVITY_BROADCAST_ACK is SuperPeerBroadcasted. Upon receiving it, the 
+    SuperPeers compare the timestamp inside to the stored earliest and latest 
+    timestamps for that message. If it was earlier than the earliest, then this
+    ACK's originator is time synchronized. Otherwise, if it was later than the
+    stored latest, the stored latest is updated for this message sequence no.
+-   A counter is kept for the number of servers who have responded with ACK
+    for this sequence number, as well as the number of servers connected at 
+    the time of its origination (at the SuperPeer).
+-   When the counter reaches this number, go through all users whose last conn 
+    timestamp was after this message's earliest timestamp but before its latest.
+    And add this message to that user's pendingMessages. Add the user to this 
+    message's pendingUsers list. Remove this message from the trackedMessages list.
+-   Whenever that user connects anywhere, when the login request comes in to 
+    a superpeer, this message would be sent back with the LOGIN_SUCCESS.
+-   Whenever a Peer disconnects, all users connected to that peer should be set 
+    with their last connected as that Peer's last server_announce timestamp.
+    They should be considered logged out from the system.
+    The superpeer of that peer should SuperPeerBroadcast a PEER_DISCONNECT 
+    message.
+-   Whenever a SuperPeer disconnects, all the users connected to it as well as 
+    the users connected to that superpeer's peers should be set to its last
+    SUPERPEER_ANNOUNCE timestamp. However, they should not be considered logged out just yet.
+    This is a special case where the peers connected to that SuperPeer and 
+    the users connected to them should be kept in a temporary state for a few seconds.
+    If within that time period, those peers do not reconnect to their backup SuperPeer, 
+    those users should be considered logged out.
+-   The peers connected to the crashed SuperPeer should attempt to connect 
+    to their backup superpeer with a RECONNECT_AUTH, containing all the users who are
+    still connected.
+-   The SuperPeer who receives it should forward it to the others, before sending 
+    any pending messages for those users through.
+-   The peer itself would be tracking which messages it has sent to each user. If 
+    it has sent a message it receives from the new SuperPeer, it wouldn't resend it.
+-   The peer will buffer any login requests until it connects to a new SuperPeer, btw.
+

@@ -1,0 +1,85 @@
+All superpeers will share the following information among them:
+    1. User Registration (this will be passed on to peers as well)
+    2. Login Information (which usernames are logged in anywhere in the system)
+    3. All messages that would be need to be sent to logged out users.
+
+All superpeers will be connected to each other in a mesh
+
+User tries to login (either at peer or superpeer)
+    - If Peer: 
+        - Peer sends LOGIN_ATTEMPT to SuperPeer
+        - If SuperPeer knows about that username being logged in
+            - it sends back a LOGIN_ATTEMPT_FAILED to Peer
+            - Peer sends LOGIN_FAILED to user and disconnects
+        - If SuperPeer thinks user is not logged in at that moment, it forwards LOGIN_ATTEMPT to other SuperPeers
+            - If it receives LOGIN_ATTEMPT_SUCCESS from everyone, it sends back a LOGIN_ATTEMPT_SUCCESS to Peer
+            - Peer sends LOGIN_SUCCESS to the user
+
+
+When connected to a client, the behaviour of a superpeer will be the same as a peer.
+The difference being that the peer would be sort of a local stub.
+From Clients:
+    1. LOGIN
+    2. LOGOUT
+    3. ACTIVITY_MESSAGE
+    4. REGISTER
+
+From Peers:
+    1. REGISTER_ATTEMPT
+    2. LOGIN_ATTEMPT
+    3. USER_CONNECTED
+    4. USER_DISCONNECTED
+    5. ACTIVITY_BROADCAST
+    6. SERVER_ANNOUNCE
+
+From SuperPeers (in addition to all the peer messages):
+    1. SUPERPEER_ANNOUNCE
+    2. REGISTER_SUCCESS
+    3. AUTHENTICATE_SUCCESS
+
+Among the SuperPeer servers, there would be one master,
+this one would be the one which will decide all user 
+registration.
+
+Scenario Walkthrough:
+
+1.  Server S_One starts up. 
+2.  S_One checks if any other server's hostname and port have been given to it.
+3.  None found. S_One assumes the role of MasterSuperPeer
+4.  Client connects to S_One and sends it a REGISTER message.
+5.  S_One sees that there are no other servers connected to it. 
+    It registers the username, and sends back a REGISTER_SUCCESS.
+6.  User sends a LOGIN request.
+7.  It sends back a LOGIN_SUCCESS.
+8.  Server S_Two starts up with S_One's remote hostname and remote port.
+9.  S_Two sends an AUTHENTICATE message.
+
+
+New Peer walkthrough:
+
+1.  Let's say S_One, S_Two, S_Three are all superpeers.
+2.  S_One and S_two both have two peer connections right now. (which matches the 
+    calculated limit in this case). S_Three has one.
+3.  Now, a new server S_Nine connects to S_Two. S_Nine gets redirected to 
+    S_Three. 
+4.  Here, S_One is the master server. When it sees in S_Three's next SUPERPEER_ANNOUNCE
+    that all the superpeers now have 2 peers, S_One decides that the system needs 
+    one more superpeer. It selects one of the other servers (either randomly
+    or by selecting the earliest connected one).
+
+5.  It broadcasts S_Four's ID in a NEW_SUPERPEER to the other superpeers.
+    All the superpeers try to make a connection to S_Four 
+    (except the one already connected).
+    The superpeer that S_Four is connected to sends a SUPERPEER_UPGRADE to S_Four 
+    with the hostnames and ports of all superpeers.
+6.  S_Four sends AUTH_SUPERPEER to S_One who starts treating S_Four as a superpeer 
+    (for sharing information, not for load balancing) already.
+    S_One sends a preliminary SUPERPEER_ANNOUNCE.
+    Then S_One sends AUTH_DATA which has:
+    i.      Registered Users
+    ii.     Pending Messages
+    iii.    Logged In Users
+7.  After receiving the above information, S_Four responds with AUTH_ACKS individually
+    for each of the above.
+8.  Once the above acknowledgements are all received by S_One, it broadcasts
+    SUPERPEER_ADDED with S_Four's information.

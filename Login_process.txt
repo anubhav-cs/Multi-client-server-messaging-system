@@ -1,0 +1,26 @@
+Username, Password
+If user connects at Peer (username, password):
+    If username is known about:
+        If password mismatch: Send back LOGIN_FAILED
+    Otherwise (if password matches, if username was not known about):
+        Send a LOGIN_ATTEMPT to the Supervisor
+        Follow same process as below
+If user connects at Superpeer (username, password):
+    Checks own data (Login Information):
+    If username, secret are not found or mismatch:
+        Send back a LOGIN_FAILED.
+    If they are found:
+        Check loggedInClients for this username.
+        If this username is found there, then send back a LOGIN_FAILED. (LOGIN_ATTEMPT_FAILED)
+        If it's not found:
+            SuperpeerBroadcast a NEW_LOGIN message (username, timestamp)
+            We also store this timestamp locally. (In StoredClient object)
+        
+        
+If it happens that we receive a NEW_LOGIN message for a user while they are logged in, 
+compare the timestamp in the NEW_LOGIN message with the stored timestamp. 
+    If own timestamp was earlier:
+        Do nothing
+    If NEW_LOGIN timestamp was greater:
+        If user is logged in on the same server, then disconnect them.
+        If user is logged in at a peer, we send them a DISCONNECT_USER message.
